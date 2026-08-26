@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.lithium.hostsd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/libexec/lithium-hostsd</string>
+	</array>
+	<!-- Fires whenever the blocklist is replaced. The directory is watched as
+	     well because atomic replacement changes the directory's mtime. -->
+	<key>WatchPaths</key>
+	<array>
+		<string>/Library/Application Support/Lithium/blocklist.txt</string>
+		<string>/Library/Application Support/Lithium</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/var/log/lithium-hostsd.err.log</string>
+</dict>
+</plist>

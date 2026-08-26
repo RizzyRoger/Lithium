@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Lithium</string>
+	<key>CFBundleDisplayName</key>
+	<string>Lithium</string>
+	<key>CFBundleExecutable</key>
+	<string>Lithium</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.lithium.app</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Lithium reads the active tab of your browsers to measure time spent on limited sites, and navigates away from sites that are out of time.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
