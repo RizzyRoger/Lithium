@@ -43,8 +43,10 @@ final class AppModel: ObservableObject {
         config = loadedConfig
         usage = loadedUsage
         helperStatus = PrivilegedInstaller.status()
+        hydrateLocksFromHelper()
+        expireLocksIfNeeded()
 
-        Log.info(.app, "loaded \(loadedConfig.rules.count) rule(s), \(loadedConfig.presets.count) preset(s), usage day \(loadedUsage.day)")
+        Log.info(.app, "loaded \(config.rules.count) rule(s), \(config.presets.count) preset(s), usage day \(usage.day)")
     }
 
     // MARK: - Lifecycle
@@ -67,6 +69,7 @@ final class AppModel: ObservableObject {
             .sink { [weak self] _ in self?.scheduleConfigSave() }
             .store(in: &cancellables)
 
+        expireLocksIfNeeded()
         syncHosts(force: true)
     }
 
@@ -87,7 +90,10 @@ final class AppModel: ObservableObject {
 
         if usage.rolloverIfNeeded(now: now) {
             usageFile.save(usage)
+            expireLocksIfNeeded()
             syncHosts(force: true)
+        } else {
+            expireLocksIfNeeded()
         }
 
         creditElapsedTime(now: now)
@@ -120,7 +126,11 @@ final class AppModel: ObservableObject {
 
             case .block(let rule, let reason):
                 lastObservedDomain = nil
-                statusLine = "\(rule.domain) — blocked"
+                if reason == .until, let until = rule.lockUntilDay {
+                    statusLine = "\(rule.domain) — \(SiteRule.formatLockDay(until))"
+                } else {
+                    statusLine = "\(rule.domain) — blocked"
+                }
                 block(tab: tab, rule: rule, reason: reason)
             }
         }
@@ -135,6 +145,10 @@ final class AppModel: ObservableObject {
         let credited = min(elapsed, maxCreditPerSample)
         if elapsed > maxCreditPerSample {
             Log.info(.tracking, "gap of \(Int(elapsed))s for \(domain) capped at \(Int(credited))s")
+        }
+        if let rule = config.rules.first(where: { $0.domain == domain && $0.enabled }),
+           rule.isLocked(on: usage.day) {
+            return
         }
         usage.add(credited, to: domain)
         Log.verbose(.tracking, "credited \(String(format: "%.2f", credited))s to \(domain), total \(Int(usage.spent(on: domain)))s")
@@ -154,7 +168,8 @@ final class AppModel: ObservableObject {
             domain: rule.domain,
             reason: reason,
             used: usage.spent(on: rule.domain),
-            limit: rule.dailyLimit
+            limit: rule.dailyLimit,
+            untilDay: rule.lockUntilDay
         ) else {
             Log.error(.enforcement, "block page server not running; relying on /etc/hosts only")
             return
@@ -171,7 +186,7 @@ final class AppModel: ObservableObject {
     // MARK: - Hosts layer
 
     func syncHosts(force: Bool = false) {
-        guard config.hostsEnforcementEnabled else {
+        if !config.hostsEnforcementEnabled && !hasActiveLocks {
             hosts.clear()
             return
         }
@@ -179,16 +194,52 @@ final class AppModel: ObservableObject {
         hosts.sync(domains: domains, force: force)
     }
 
+    var hasActiveLocks: Bool {
+        config.rules.contains { $0.isLocked(on: usage.day) }
+    }
+
     // MARK: - Rules
 
-    func addRule(domain: String, limit: TimeInterval?) {
+    func addRule(domain: String, limit: TimeInterval?, lockUntilDay: String? = nil) {
         guard let normalized = DomainMatcher.normalize(userInput: domain) else {
             Log.error(.ui, "rejected invalid domain input: \(domain)")
             return
         }
-        if let index = config.rules.firstIndex(where: { $0.domain == normalized }) {
-            config.rules[index].dailyLimit = limit
-            config.rules[index].enabled = true
+        let existingIndex = config.rules.firstIndex(where: { $0.domain == normalized })
+        if let existingIndex, config.rules[existingIndex].isLocked(on: usage.day) {
+            Log.error(.ui, "refused to edit locked rule for \(normalized)")
+            return
+        }
+
+        if let lockUntilDay {
+            guard helperStatus.isFullyInstalled else {
+                Log.error(.ui, "until-lock requires the hard-blocking helper")
+                return
+            }
+            guard lockUntilDay > usage.day else {
+                Log.error(.ui, "lock until-day \(lockUntilDay) is not in the future")
+                return
+            }
+            if let existingIndex {
+                let previous = config.rules[existingIndex].lockUntilDay
+                if previous == nil || lockUntilDay > previous! {
+                    config.rules[existingIndex].lockUntilDay = lockUntilDay
+                }
+                config.rules[existingIndex].enabled = true
+                Log.info(.ui, "locked \(normalized) until \(lockUntilDay) over existing rule")
+            } else {
+                config.rules.append(SiteRule(
+                    domain: normalized,
+                    dailyLimit: nil,
+                    lockUntilDay: lockUntilDay,
+                    removeWhenLockExpires: true
+                ))
+                Log.info(.ui, "locked \(normalized) until \(lockUntilDay)")
+            }
+            hosts.submitLock(domain: normalized, untilDay: lockUntilDay)
+        } else if let existingIndex {
+            config.rules[existingIndex].dailyLimit = limit
+            config.rules[existingIndex].enabled = true
             Log.info(.ui, "updated rule for \(normalized) to \(limit.map { SiteRule.format(seconds: $0) } ?? "banned")")
         } else {
             config.rules.append(SiteRule(domain: normalized, dailyLimit: limit))
@@ -201,6 +252,10 @@ final class AppModel: ObservableObject {
     }
 
     func removeRule(_ rule: SiteRule) {
+        guard !rule.isLocked(on: usage.day) else {
+            Log.error(.ui, "refused to remove locked rule for \(rule.domain)")
+            return
+        }
         config.rules.removeAll { $0.id == rule.id }
         config.activePresetID = nil
         Log.info(.ui, "removed rule for \(rule.domain)")
@@ -208,6 +263,10 @@ final class AppModel: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for rule: SiteRule) {
+        guard !rule.isLocked(on: usage.day) else {
+            Log.error(.ui, "refused to pause locked rule for \(rule.domain)")
+            return
+        }
         guard let index = config.rules.firstIndex(where: { $0.id == rule.id }) else { return }
         config.rules[index].enabled = enabled
         config.activePresetID = nil
@@ -216,6 +275,10 @@ final class AppModel: ObservableObject {
 
     /// Gives back the rest of the day for one site, useful after a deliberate override.
     func resetUsage(for rule: SiteRule) {
+        guard !rule.isLocked(on: usage.day) else {
+            Log.error(.ui, "refused to reset usage on locked rule for \(rule.domain)")
+            return
+        }
         usage.reset(domain: rule.domain)
         usageFile.save(usage)
         Log.info(.ui, "reset today's usage for \(rule.domain)")
@@ -242,14 +305,21 @@ final class AppModel: ObservableObject {
     }
 
     func applyPreset(_ preset: Preset) {
-        // Fresh identifiers keep the applied copy independent of the stored preset.
-        config.rules = preset.rules.map { rule in
+        let locked = config.rules.filter { $0.isLocked(on: usage.day) }
+        let lockedDomains = Set(locked.map(\.domain))
+        var next = preset.rules.compactMap { rule -> SiteRule? in
+            guard !lockedDomains.contains(rule.domain) else { return nil }
             var copy = rule
             copy.id = UUID()
+            copy.lockUntilDay = nil
+            copy.removeWhenLockExpires = false
             return copy
         }
+        next.append(contentsOf: locked)
+        next.sort { $0.domain < $1.domain }
+        config.rules = next
         config.activePresetID = preset.id
-        Log.info(.ui, "applied preset '\(preset.name)' (\(preset.rules.count) rule(s))")
+        Log.info(.ui, "applied preset '\(preset.name)' (kept \(locked.count) locked rule(s))")
         syncHosts()
     }
 
@@ -287,6 +357,10 @@ final class AppModel: ObservableObject {
 
     func uninstallHelper() {
         guard !helperBusy else { return }
+        if hasActiveLocks {
+            helperMessage = "Cannot remove the helper while a hard lock is active."
+            return
+        }
         helperBusy = true
         helperMessage = nil
         PrivilegedInstaller.uninstall { [weak self] result in
@@ -349,7 +423,63 @@ final class AppModel: ObservableObject {
 
     func isBlockedNow(_ rule: SiteRule) -> Bool {
         guard rule.enabled else { return false }
-        return rule.isBanned || usage.isExhausted(rule)
+        if rule.isLocked(on: usage.day) { return true }
+        if rule.dailyLimit == nil { return true }
+        return usage.isExhausted(rule)
+    }
+
+    func setHostsEnforcementEnabled(_ enabled: Bool) {
+        if !enabled && hasActiveLocks {
+            helperMessage = "Cannot turn off hard blocking while a lock is active."
+            return
+        }
+        config.hostsEnforcementEnabled = enabled
+        syncHosts(force: true)
+    }
+
+    /// Re-reads root-owned locks so deleting a rule in config.json cannot hide it.
+    func hydrateLocksFromHelper() {
+        let committed = hosts.readCommittedLocks()
+        guard !committed.isEmpty else { return }
+        let today = usage.day
+        for (domain, day) in committed where today < day {
+            if let index = config.rules.firstIndex(where: { $0.domain == domain }) {
+                let current = config.rules[index].lockUntilDay
+                if current == nil || day > current! {
+                    config.rules[index].lockUntilDay = day
+                    config.rules[index].enabled = true
+                }
+            } else {
+                config.rules.append(SiteRule(
+                    domain: domain,
+                    dailyLimit: nil,
+                    lockUntilDay: day,
+                    removeWhenLockExpires: true
+                ))
+            }
+        }
+        config.rules.sort { $0.domain < $1.domain }
+    }
+
+    @discardableResult
+    func expireLocksIfNeeded() -> Bool {
+        let today = usage.day
+        var changed = false
+        let next = config.rules.compactMap { rule -> SiteRule? in
+            guard let until = rule.lockUntilDay, today >= until else { return rule }
+            changed = true
+            Log.info(.enforcement, "lock expired for \(rule.domain) (was until \(until))")
+            if rule.removeWhenLockExpires { return nil }
+            var copy = rule
+            copy.lockUntilDay = nil
+            copy.removeWhenLockExpires = false
+            return copy
+        }
+        if changed {
+            config.rules = next
+            syncHosts(force: true)
+        }
+        return changed
     }
 
     // MARK: - Saving

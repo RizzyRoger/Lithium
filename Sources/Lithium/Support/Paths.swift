@@ -18,6 +18,10 @@ enum Paths {
     /// installing user so the unprivileged app can replace the blocklist.
     static let sharedSupportDirectory = URL(fileURLWithPath: "/Library/Application Support/Lithium", isDirectory: true)
     static var blocklistFile: URL { sharedSupportDirectory.appendingPathComponent("blocklist.txt") }
+    /// Root-owned commitment locks. The app can read this but not write it.
+    static var locksFile: URL { sharedSupportDirectory.appendingPathComponent("locks.txt") }
+    /// User-writable additions the helper merges into `locksFile`.
+    static var pendingLocksFile: URL { sharedSupportDirectory.appendingPathComponent("pending-locks.txt") }
 
     static let helperExecutable = URL(fileURLWithPath: "/usr/local/libexec/lithium-hostsd")
     static let daemonPlist = URL(fileURLWithPath: "/Library/LaunchDaemons/com.lithium.hostsd.plist")

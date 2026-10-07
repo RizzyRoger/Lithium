@@ -3,11 +3,20 @@ import Foundation
 /// The HTML for the block page. Self-contained so the page renders with no
 /// network access at all.
 enum BlockPage {
-    static func html(domain: String, reason: BlockReason, used: TimeInterval, limit: TimeInterval?) -> String {
+    static func html(
+        domain: String,
+        reason: BlockReason,
+        used: TimeInterval,
+        limit: TimeInterval?,
+        untilDay: String? = nil
+    ) -> String {
         let safeDomain = escape(domain)
+        let untilLabel = untilDay.map { SiteRule.weekdayName($0) } ?? "the chosen day"
+        let title: String
         let detail: String
         switch reason {
         case .limitReached:
+            title = "Site Blocked for the day"
             let spent = SiteRule.format(seconds: used)
             if let limit {
                 detail = "You have used your full \(escape(SiteRule.format(seconds: limit))) of \(safeDomain) today (\(escape(spent)))."
@@ -15,7 +24,11 @@ enum BlockPage {
                 detail = "You have used \(escape(spent)) of \(safeDomain) today."
             }
         case .banned:
+            title = "Site Blocked for the day"
             detail = "\(safeDomain) is banned for the whole day."
+        case .until:
+            title = "Site Blocked until \(escape(untilLabel))"
+            detail = "\(safeDomain) is hard-blocked until the start of \(escape(untilLabel))."
         }
 
         return """
@@ -24,7 +37,7 @@ enum BlockPage {
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Site Blocked for the day</title>
+        <title>\(title)</title>
         <style>
           :root { color-scheme: dark light; }
           * { box-sizing: border-box; }
@@ -94,22 +107,35 @@ enum BlockPage {
         <body>
           <main class="card">
             <div class="mark">&#9203;</div>
-            <h1>Site Blocked for the day</h1>
+            <h1>\(title)</h1>
             <div class="domain">\(safeDomain)</div>
             <p>\(detail)</p>
-            <p class="reset" id="reset"></p>
+            <p class="reset" id="reset" data-until="\(escape(untilDay ?? ""))"></p>
             <div class="brand">Lithium</div>
           </main>
           <script>
             (function () {
               var el = document.getElementById("reset");
-              function tick() {
+              var until = el.getAttribute("data-until") || "";
+              function targetMidnight() {
+                if (/^\\d{4}-\\d{2}-\\d{2}$/.test(until)) {
+                  var parts = until.split("-");
+                  return new Date(+parts[0], +parts[1] - 1, +parts[2], 0, 0, 0, 0);
+                }
                 var now = new Date();
-                var midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
-                var ms = midnight - now;
-                var h = Math.floor(ms / 3600000);
+                return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+              }
+              function tick() {
+                var ms = targetMidnight() - new Date();
+                if (ms <= 0) {
+                  el.textContent = "Access should return now. Reload if this page is still showing.";
+                  return;
+                }
+                var d = Math.floor(ms / 86400000);
+                var h = Math.floor((ms % 86400000) / 3600000);
                 var m = Math.floor((ms % 3600000) / 60000);
-                el.textContent = "Access returns at midnight, in " + h + "h " + m + "m.";
+                var wait = d > 0 ? (d + "d " + h + "h " + m + "m") : (h + "h " + m + "m");
+                el.textContent = "Access returns at midnight, in " + wait + ".";
               }
               tick();
               setInterval(tick, 30000);

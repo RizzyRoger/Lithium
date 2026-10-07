@@ -54,6 +54,8 @@ enum PrivilegedInstaller {
         let gid = getgid()
         let supportDir = Paths.sharedSupportDirectory.path
         let blocklist = Paths.blocklistFile.path
+        let locks = Paths.locksFile.path
+        let pending = Paths.pendingLocksFile.path
 
         let script = """
         #!/bin/bash
@@ -69,6 +71,18 @@ enum PrivilegedInstaller {
         fi
         chown \(uid):\(gid) \(quote(blocklist))
         chmod 644 \(quote(blocklist))
+
+        if [ ! -f \(quote(pending)) ]; then
+            : > \(quote(pending))
+        fi
+        chown \(uid):\(gid) \(quote(pending))
+        chmod 644 \(quote(pending))
+
+        if [ ! -f \(quote(locks)) ]; then
+            : > \(quote(locks))
+        fi
+        chown root:wheel \(quote(locks))
+        chmod 644 \(quote(locks))
 
         touch /var/log/lithium-hostsd.log
         chmod 644 /var/log/lithium-hostsd.log
@@ -91,6 +105,8 @@ enum PrivilegedInstaller {
 
     static func uninstall(completion: @escaping (Result<Void, InstallError>) -> Void) {
         let blocklist = Paths.blocklistFile.path
+        let locks = Paths.locksFile.path
+        let pending = Paths.pendingLocksFile.path
         let script = """
         #!/bin/bash
         set -uo pipefail
@@ -98,6 +114,12 @@ enum PrivilegedInstaller {
         # Clear our /etc/hosts section before the helper goes away.
         if [ -f \(quote(blocklist)) ]; then
             : > \(quote(blocklist))
+        fi
+        if [ -f \(quote(pending)) ]; then
+            : > \(quote(pending))
+        fi
+        if [ -f \(quote(locks)) ]; then
+            : > \(quote(locks))
         fi
         if [ -x \(quote(Paths.helperExecutable.path)) ]; then
             \(quote(Paths.helperExecutable.path)) || true

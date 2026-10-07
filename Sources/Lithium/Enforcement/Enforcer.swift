@@ -7,13 +7,16 @@ enum Enforcer {
         case untracked
         /// A rule covers it and time is left.
         case allow(rule: SiteRule, remaining: TimeInterval)
-        /// Out of time, or banned for the day.
+        /// Out of time, banned for the day, or locked until a date.
         case block(rule: SiteRule, reason: BlockReason)
     }
 
     static func decide(host: String, config: Config, usage: UsageStore) -> Decision {
         guard let rule = config.rule(matching: host) else { return .untracked }
-        if rule.isBanned {
+        if rule.isLocked(on: usage.day) {
+            return .block(rule: rule, reason: .until)
+        }
+        if rule.dailyLimit == nil {
             return .block(rule: rule, reason: .banned)
         }
         if usage.isExhausted(rule) {
@@ -26,7 +29,7 @@ enum Enforcer {
     static func blockedDomains(config: Config, usage: UsageStore) -> Set<String> {
         var result: Set<String> = []
         for rule in config.rules where rule.enabled {
-            if rule.isBanned || usage.isExhausted(rule) {
+            if rule.isLocked(on: usage.day) || rule.dailyLimit == nil || usage.isExhausted(rule) {
                 result.insert(rule.domain)
             }
         }

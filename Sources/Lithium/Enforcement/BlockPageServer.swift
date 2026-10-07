@@ -27,7 +27,13 @@ final class BlockPageServer {
     }
 
     /// URL a blocked tab should be sent to.
-    func blockURL(domain: String, reason: BlockReason, used: TimeInterval, limit: TimeInterval?) -> String? {
+    func blockURL(
+        domain: String,
+        reason: BlockReason,
+        used: TimeInterval,
+        limit: TimeInterval?,
+        untilDay: String? = nil
+    ) -> String? {
         guard let port else { return nil }
         var components = URLComponents()
         components.scheme = "http"
@@ -41,6 +47,9 @@ final class BlockPageServer {
         ]
         if let limit {
             items.append(URLQueryItem(name: "limit", value: String(Int(limit.rounded()))))
+        }
+        if let untilDay {
+            items.append(URLQueryItem(name: "until", value: untilDay))
         }
         components.queryItems = items
         return components.string
@@ -140,8 +149,15 @@ final class BlockPageServer {
         let reason = BlockReason(rawValue: value("r") ?? "") ?? .banned
         let used = TimeInterval(value("used") ?? "") ?? 0
         let limit = TimeInterval(value("limit") ?? "")
+        let untilDay = value("until")
 
-        let html = BlockPage.html(domain: domain, reason: reason, used: used, limit: limit)
+        let html = BlockPage.html(
+            domain: domain,
+            reason: reason,
+            used: used,
+            limit: limit,
+            untilDay: untilDay
+        )
         return httpResponse(status: "200 OK", contentType: "text/html; charset=utf-8", body: Data(html.utf8))
     }
 
@@ -160,4 +176,5 @@ final class BlockPageServer {
 enum BlockReason: String {
     case limitReached = "limit"
     case banned = "ban"
+    case until = "until"
 }

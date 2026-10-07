@@ -9,6 +9,8 @@ struct RestrictionsSection: View {
     @State private var hours: Int = 0
     @State private var minutes: Int = 30
     @State private var banAllDay: Bool = false
+    @State private var hardBlockUntil: Bool = false
+    @State private var untilDate: Date = RestrictionsSection.defaultUntilDate()
     @State private var errorText: String?
 
     var body: some View {
@@ -25,14 +27,41 @@ struct RestrictionsSection: View {
                     onSubmit: addRule
                 )
 
-                Toggle(isOn: $banAllDay) {
+                Toggle(isOn: banBinding) {
                     Text("Ban for the whole day")
                         .font(.system(size: 12))
                 }
                 .toggleStyle(.checkbox)
+                .disabled(hardBlockUntil)
+
+                Toggle(isOn: lockBinding) {
+                    Text("Hard block until")
+                        .font(.system(size: 12))
+                }
+                .toggleStyle(.checkbox)
+
+                if hardBlockUntil {
+                    DatePicker(
+                        "Until",
+                        selection: $untilDate,
+                        in: RestrictionsSection.defaultUntilDate()...,
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(.compact)
+                    .font(.system(size: 12))
+
+                    Text("Unblocks at local midnight at the start of that day. Requires hard blocking. Cannot be edited once added.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 HStack {
-                    DurationPicker(hours: $hours, minutes: $minutes, isEnabled: !banAllDay)
+                    DurationPicker(
+                        hours: $hours,
+                        minutes: $minutes,
+                        isEnabled: !banAllDay && !hardBlockUntil
+                    )
                     Spacer()
                     Button(action: addRule) {
                         Text(isEditingExisting ? "Update" : "Add")
@@ -70,10 +99,39 @@ struct RestrictionsSection: View {
         let rules = model.config.rules
         guard !rules.isEmpty else { return "Nothing limited" }
         let blocked = rules.filter { model.isBlockedNow($0) }.count
+        let locked = rules.filter { $0.isLocked }.count
+        if locked > 0 {
+            return "\(rules.count) site\(rules.count == 1 ? "" : "s") · \(locked) locked"
+        }
         if blocked > 0 {
             return "\(rules.count) site\(rules.count == 1 ? "" : "s") · \(blocked) blocked now"
         }
         return "\(rules.count) site\(rules.count == 1 ? "" : "s") limited"
+    }
+
+    private var banBinding: Binding<Bool> {
+        Binding(
+            get: { banAllDay },
+            set: { newValue in
+                banAllDay = newValue
+                if newValue { hardBlockUntil = false }
+            }
+        )
+    }
+
+    private var lockBinding: Binding<Bool> {
+        Binding(
+            get: { hardBlockUntil },
+            set: { newValue in
+                hardBlockUntil = newValue
+                if newValue {
+                    banAllDay = false
+                    if untilDate < RestrictionsSection.defaultUntilDate() {
+                        untilDate = RestrictionsSection.defaultUntilDate()
+                    }
+                }
+            }
+        )
     }
 
     private var resolvedDomain: String? {
@@ -82,17 +140,40 @@ struct RestrictionsSection: View {
 
     private var isEditingExisting: Bool {
         guard let domain = resolvedDomain else { return false }
-        return model.config.rules.contains { $0.domain == domain }
+        return model.config.rules.contains { $0.domain == domain && !$0.isLocked }
     }
 
     private var canAdd: Bool {
         guard resolvedDomain != nil else { return false }
+        if hardBlockUntil { return true }
         return banAllDay || hours > 0 || minutes > 0
     }
 
     private func addRule() {
         guard let domain = resolvedDomain else {
             errorText = "That does not look like a site address."
+            return
+        }
+        if let existing = model.config.rules.first(where: { $0.domain == domain }),
+           existing.isLocked {
+            errorText = "\(domain) is locked until \(existing.lockDescription). It cannot be edited."
+            return
+        }
+        if hardBlockUntil {
+            guard model.helperStatus.isFullyInstalled else {
+                errorText = "Enable hard blocking first. An until-lock you can delete is not a lock."
+                return
+            }
+            let day = SiteRule.dayString(from: untilDate)
+            guard day > UsageStore.today() else {
+                errorText = "Pick a future day. Unblock is at the start of that day."
+                return
+            }
+            errorText = nil
+            model.addRule(domain: domain, limit: nil, lockUntilDay: day)
+            domainText = ""
+            hardBlockUntil = false
+            untilDate = RestrictionsSection.defaultUntilDate()
             return
         }
         guard banAllDay || hours > 0 || minutes > 0 else {
@@ -107,7 +188,9 @@ struct RestrictionsSection: View {
     }
 
     private func load(_ rule: SiteRule) {
+        guard !rule.isLocked else { return }
         domainText = rule.domain
+        hardBlockUntil = false
         if let limit = rule.dailyLimit {
             banAllDay = false
             hours = Int(limit) / 3600
@@ -116,6 +199,12 @@ struct RestrictionsSection: View {
             banAllDay = true
         }
         errorText = nil
+    }
+
+    static func defaultUntilDate() -> Date {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: Date())
+        return calendar.date(byAdding: .day, value: 1, to: start) ?? Date().addingTimeInterval(86_400)
     }
 }
 
@@ -126,6 +215,8 @@ private struct RuleRow: View {
     let onEdit: () -> Void
 
     @State private var isHovering = false
+
+    private var locked: Bool { rule.isLocked }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -144,7 +235,7 @@ private struct RuleRow: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
 
-                if isHovering {
+                if isHovering && !locked {
                     Button(action: onEdit) {
                         Image(systemName: "pencil")
                     }
@@ -180,7 +271,7 @@ private struct RuleRow: View {
             }
             .font(.system(size: 10))
 
-            if !rule.isBanned {
+            if !rule.isBanned && !locked {
                 ProgressView(value: model.progress(for: rule))
                     .progressViewStyle(.linear)
                     .tint(statusColor)
@@ -194,17 +285,20 @@ private struct RuleRow: View {
                 .fill(isHovering ? Color.primary.opacity(0.05) : Color.clear)
         )
         .onHover { isHovering = $0 }
+        .help(locked ? "Hard-locked \(rule.lockDescription). Cannot be edited." : "")
     }
 
     private var statusColor: Color {
         if !rule.enabled { return .gray }
+        if locked { return .red }
         if model.isBlockedNow(rule) { return .red }
         return model.progress(for: rule) > 0.75 ? .orange : .green
     }
 
     private var detailText: String {
+        if locked { return rule.lockDescription }
         if !rule.enabled { return "paused" }
-        if rule.isBanned { return "banned" }
+        if rule.dailyLimit == nil { return "banned" }
         let spent = model.spent(on: rule)
         return "\(SiteRule.format(seconds: spent)) / \(rule.limitDescription)"
     }

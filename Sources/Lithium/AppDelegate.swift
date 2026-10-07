@@ -108,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: "Lithium")
 
         let closest = activeRules
-            .filter { !$0.isBanned }
+            .filter { !$0.isBanned && !$0.isLocked }
             .min { lhs, rhs in
                 (model.usage.remaining(for: lhs) ?? .greatestFiniteMagnitude)
                     < (model.usage.remaining(for: rhs) ?? .greatestFiniteMagnitude)

@@ -8,13 +8,23 @@
 	<array>
 		<string>/usr/local/libexec/lithium-hostsd</string>
 	</array>
-	<!-- Fires whenever the blocklist is replaced. The directory is watched as
-	     well because atomic replacement changes the directory's mtime. -->
+	<!-- Fires whenever the blocklist or pending locks are replaced. The
+	     directory is watched as well because atomic replacement changes the
+	     directory's mtime. -->
 	<key>WatchPaths</key>
 	<array>
 		<string>/Library/Application Support/Lithium/blocklist.txt</string>
+		<string>/Library/Application Support/Lithium/pending-locks.txt</string>
 		<string>/Library/Application Support/Lithium</string>
 	</array>
+	<!-- Drop expired until-locks even if no file changed overnight. -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>0</integer>
+		<key>Minute</key>
+		<integer>5</integer>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>

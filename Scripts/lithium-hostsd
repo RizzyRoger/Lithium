@@ -1,9 +1,10 @@
 #!/bin/bash
-# Root helper: mirrors Lithium's blocklist into the marked region of /etc/hosts.
+# Root helper: mirrors Lithium's blocklist and commitment locks into /etc/hosts.
 #
 # Installed to /usr/local/libexec/lithium-hostsd and launched by
 # /Library/LaunchDaemons/com.lithium.hostsd.plist whenever the blocklist
-# changes. The unprivileged app never touches /etc/hosts itself.
+# or pending locks change, and every day at 00:05. The unprivileged app
+# never touches /etc/hosts itself.
 set -uo pipefail
 
 # Paths are overridable so the rewrite logic can be exercised without root.
@@ -12,13 +13,17 @@ set -uo pipefail
 : "${LITHIUM_LOG_FILE:=/var/log/lithium-hostsd.log}"
 : "${LITHIUM_LOCK_DIR:=/var/run/lithium-hostsd.lock}"
 : "${LITHIUM_SKIP_DNS_FLUSH:=0}"
+: "${LITHIUM_TODAY:=$(date +%Y-%m-%d)}"
 
 BLOCKLIST="$LITHIUM_SUPPORT_DIR/blocklist.txt"
+LOCKS="$LITHIUM_SUPPORT_DIR/locks.txt"
+PENDING="$LITHIUM_SUPPORT_DIR/pending-locks.txt"
 HOSTS="$LITHIUM_HOSTS_FILE"
 BEGIN_MARKER="# BEGIN LITHIUM"
 END_MARKER="# END LITHIUM"
 LOG="$LITHIUM_LOG_FILE"
 LOCKDIR="$LITHIUM_LOCK_DIR"
+TODAY="$LITHIUM_TODAY"
 
 log() {
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG" 2>/dev/null
@@ -37,20 +42,95 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
 done
 
+valid_domain() {
+    printf '%s' "$1" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+}
+
+valid_day() {
+    printf '%s' "$1" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+}
+
+merged_locks="$(mktemp /tmp/lithium-locks.XXXXXX)" || {
+    log "could not create temp file"
+    exit 1
+}
+
+{
+    [ -f "$LOCKS" ] && cat "$LOCKS"
+    [ -f "$PENDING" ] && cat "$PENDING"
+} | awk -v today="$TODAY" '
+    function valid_dom(d) {
+        return d ~ /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
+    }
+    function valid_day(d) {
+        return d ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/
+    }
+    {
+        sub(/#.*/, "")
+        d = tolower($1)
+        day = $2
+        if (d == "" || day == "") next
+        if (!valid_dom(d) || !valid_day(day)) next
+        if (day <= today) next
+        if (!(d in best) || day > best[d]) best[d] = day
+    }
+    END {
+        for (d in best) print d, best[d]
+    }
+' | sort >"$merged_locks"
+
+if ! cat "$merged_locks" >"$LOCKS"; then
+    log "failed writing $LOCKS"
+    rm -f "$merged_locks"
+    exit 1
+fi
+
+if [ -f "$PENDING" ]; then
+    : >"$PENDING" 2>/dev/null || true
+fi
+
+lock_count=0
+if [ -s "$LOCKS" ]; then
+    lock_count="$(grep -c . "$LOCKS" || true)"
+fi
+
 domains=()
+declare_seen=""
+
+add_domain() {
+    local d="$1"
+    [ -z "$d" ] && return
+    case " $declare_seen " in
+        *" $d "*) return ;;
+    esac
+    declare_seen="$declare_seen $d"
+    domains+=("$d")
+}
+
 if [ -f "$BLOCKLIST" ]; then
     while IFS= read -r raw || [ -n "$raw" ]; do
         line="${raw%%#*}"
         line="$(printf '%s' "$line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
         [ -z "$line" ] && continue
-        # Only accept plausible hostnames; never let arbitrary text reach /etc/hosts.
-        if printf '%s' "$line" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
-            domains+=("$line")
+        if valid_domain "$line"; then
+            add_domain "$line"
         else
             log "skipping invalid entry: $raw"
         fi
     done <"$BLOCKLIST"
 fi
+
+if [ -s "$LOCKS" ]; then
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        d="${raw%% *}"
+        d="$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')"
+        if valid_domain "$d"; then
+            add_domain "$d"
+        fi
+    done <"$LOCKS"
+fi
+
+rm -f "$merged_locks"
 
 tmp="$(mktemp /tmp/lithium-hosts.XXXXXX)" || {
     log "could not create temp file"
@@ -95,4 +175,4 @@ if [ "$LITHIUM_SKIP_DNS_FLUSH" != "1" ]; then
     killall -HUP mDNSResponder 2>/dev/null
 fi
 
-log "synced ${#domains[@]} domain(s)"
+log "synced ${#domains[@]} domain(s), ${lock_count:-0} lock(s)"

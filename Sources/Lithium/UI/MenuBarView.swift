@@ -52,12 +52,13 @@ struct MenuBarView: View {
 
             Menu {
                 Toggle("Hard blocking via /etc/hosts", isOn: hostsBinding)
-                    .disabled(!model.helperStatus.isFullyInstalled)
+                    .disabled(!model.helperStatus.isFullyInstalled || model.hasActiveLocks)
                 Toggle("Launch at login", isOn: loginItemBinding)
 
                 Divider()
 
                 if model.helperStatus.isFullyInstalled {
+                    Button("Repair hard blocking helper…") { model.installHelper() }
                     Button("Remove hard blocking helper…") { model.uninstallHelper() }
                 } else {
                     Button("Install hard blocking helper…") { model.installHelper() }
@@ -82,8 +83,7 @@ struct MenuBarView: View {
         Binding(
             get: { model.config.hostsEnforcementEnabled },
             set: { newValue in
-                model.config.hostsEnforcementEnabled = newValue
-                model.syncHosts(force: true)
+                model.setHostsEnforcementEnabled(newValue)
             }
         )
     }
@@ -147,7 +147,7 @@ struct PopoverContentView: View {
                 icon: "lock.shield",
                 tint: .blue,
                 title: "Hard blocking is off",
-                message: "Blocked sites are redirected in scriptable browsers only. Installing the helper also blocks them at the DNS level in every browser.",
+                message: "Until-locks and DNS blocking need the helper. Enable it with your admin password; a lock you can delete is not a lock.",
                 actionTitle: model.helperBusy ? "Working…" : "Enable",
                 action: model.installHelper,
                 actionDisabled: model.helperBusy

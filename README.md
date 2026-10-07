@@ -61,8 +61,15 @@ To install it properly, drag `dist/Lithium.app` to `/Applications`, then turn on
 - Type a partial name and pick from the suggestions; "tik" offers `tiktok.com`.
   Arrow keys move through suggestions, Return accepts one.
 - Set hours and minutes for a daily allowance, or check **Ban for the whole day**.
+- **Hard block until** takes a calendar day. Picking Friday means the site stays
+  in `/etc/hosts` until local midnight at the *start* of Friday, and the row
+  cannot be edited, paused, or deleted until then. Enable hard blocking first;
+  the helper keeps the lock even if you empty the daily blocklist. After that
+  midnight, a lock-only rule is removed; a site that already had a daily limit
+  goes back to that limit.
 - The list below shows each site's usage against its limit. Hovering a row
-  reveals buttons to edit, pause, reset today's usage, or delete the rule.
+  reveals buttons to edit, pause, reset today's usage, or delete the rule
+  (locked rows have none of those).
 
 A rule for `youtube.com` also covers `m.youtube.com` and any other subdomain. If
 two rules could match, the more specific one wins, so `docs.google.com` can have
@@ -81,15 +88,22 @@ Counters reset at local midnight, which also removes the `/etc/hosts` entries.
 | `~/Library/Application Support/Lithium/config.json` | Rules, presets, settings |
 | `~/Library/Application Support/Lithium/usage.json` | Today's counters |
 | `~/Library/Logs/Lithium.log` | App log |
-| `/Library/Application Support/Lithium/blocklist.txt` | Domains published to the root helper |
+| `/Library/Application Support/Lithium/blocklist.txt` | Daily blocklist published to the root helper |
+| `/Library/Application Support/Lithium/pending-locks.txt` | Until-locks the app appends; the helper merges them |
+| `/Library/Application Support/Lithium/locks.txt` | Root-owned until-locks; cannot be shortened by the app |
 | `/usr/local/libexec/lithium-hostsd` | Root helper that edits `/etc/hosts` |
-| `/Library/LaunchDaemons/com.lithium.hostsd.plist` | Runs the helper when the blocklist changes |
+| `/Library/LaunchDaemons/com.lithium.hostsd.plist` | Runs the helper on blocklist changes and at 00:05 |
 | `/var/log/lithium-hostsd.log` | Helper log |
 | `~/Library/LaunchAgents/com.lithium.app.plist` | Launch at login |
 
-Lithium only ever writes `blocklist.txt`; the helper is the only thing that
-touches `/etc/hosts`, and it only rewrites lines between its
-`# BEGIN LITHIUM` and `# END LITHIUM` markers.
+The unprivileged app writes `blocklist.txt` and appends `pending-locks.txt`. The
+helper is the only thing that touches `/etc/hosts` (and root-owned `locks.txt`),
+and it only rewrites lines between its `# BEGIN LITHIUM` and `# END LITHIUM`
+markers.
+
+If you already installed the helper before until-locks existed, use **Repair
+hard blocking helper…** in the gear menu once so the new script and midnight
+run are installed.
 
 ## Removing it
 
